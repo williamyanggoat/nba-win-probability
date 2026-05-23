@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NBA Win Probability</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+<style>
+  :root { --bg:#0d1117; --surface:#161b22; --border:#30363d; --text:#e6edf3; --muted:#8b949e; --green:#3fb950; --red:#f85149; }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { background:var(--bg); color:var(--text); font-family:system-ui,sans-serif; min-height:100vh; }
+  header { padding:1.2rem 2rem; border-bottom:1px solid var(--border); display:flex; align-items:center; gap:1rem; }
+  header h1 { font-size:1.1rem; font-weight:600; }
+  #game-id-input { background:var(--surface); border:1px solid var(--border); color:var(--text); padding:.4rem .8rem; border-radius:6px; font-size:.9rem; width:200px; }
+  button { background:#238636; border:none; color:#fff; padding:.4rem 1rem; border-radius:6px; cursor:pointer; font-size:.9rem; }
+  #status { font-size:.8rem; color:var(--muted); margin-left:auto; }
+  #status.live { color:var(--green); }
+
+  main { max-width:960px; margin:2rem auto; padding:0 1.5rem; display:grid; gap:1.5rem; }
+
+  /* Score card */
+  #score-card { background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:2rem; display:grid; grid-template-columns:1fr auto 1fr; align-items:center; gap:1rem; text-align:center; }
+  .team-score .name  { font-size:.95rem; color:var(--muted); margin-bottom:.3rem; }
+  .team-score .score { font-size:3.5rem; font-weight:700; line-height:1; }
+  #game-info { font-size:.85rem; color:var(--muted); }
+
+  /* Win prob bars */
+  #prob-card { background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:1.5rem 2rem; }
+  #prob-card h2 { font-size:.85rem; color:var(--muted); margin-bottom:1rem; text-transform:uppercase; letter-spacing:.08em; }
+  .prob-row { display:flex; align-items:center; gap:1rem; margin-bottom:.75rem; }
+  .prob-label { width:100px; font-size:.9rem; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .prob-bar-bg { flex:1; height:20px; background:var(--bg); border-radius:10px; overflow:hidden; }
+  .prob-bar    { height:100%; border-radius:10px; transition:width .5s ease; }
+  .prob-pct    { width:50px; text-align:right; font-size:.95rem; font-weight:600; }
+  #home-bar { background:var(--green); }
+  #away-bar { background:var(--red); }
+
+  /* Timeline chart */
+  #chart-card { background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:1.5rem 2rem; }
+  #chart-card h2 { font-size:.85rem; color:var(--muted); margin-bottom:1rem; text-transform:uppercase; letter-spacing:.08em; }
+  #prob-chart { max-height:220px; }
+
+  /* Event log */
+  #log-card { background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:1.5rem 2rem; }
+  #log-card h2 { font-size:.85rem; color:var(--muted); margin-bottom:.75rem; text-transform:uppercase; letter-spacing:.08em; }
+  #event-log { font-size:.82rem; color:var(--muted); max-height:140px; overflow-y:auto; }
+  .log-entry { padding:.25rem 0; border-bottom:1px solid var(--border); }
+</style>
+</head>
+<body>
+<header>
+  <h1>🏀 NBA Win Probability</h1>
+  <input id="game-id-input" placeholder="Game ID (e.g. 0022301234)" />
+  <button onclick="connect()">Connect</button>
+  <span id="status">disconnected</span>
+</header>
+
+<main>
+  <div id="score-card">
+    <div class="team-score">
+      <div class="name"  id="home-name">—</div>
+      <div class="score" id="home-score">0</div>
+    </div>
+    <div id="game-info">Q1 · 12:00</div>
+    <div class="team-score">
+      <div class="name"  id="away-name">—</div>
+      <div class="score" id="away-score">0</div>
+    </div>
+  </div>
+
+  <div id="prob-card">
+    <h2>Win probability</h2>
+    <div class="prob-row">
+      <span class="prob-label" id="prob-home-label">Home</span>
+      <div class="prob-bar-bg"><div id="home-bar" class="prob-bar" style="width:50%"></div></div>
+      <span class="prob-pct" id="home-pct">50%</span>
+    </div>
+    <div class="prob-row">
+      <span class="prob-label" id="prob-away-label">Away</span>
+      <div class="prob-bar-bg"><div id="away-bar" class="prob-bar" style="width:50%"></div></div>
+      <span class="prob-pct" id="away-pct">50%</span>
+    </div>
+  </div>
+
+  <div id="chart-card">
+    <h2>Win probability timeline</h2>
+    <canvas id="prob-chart"></canvas>
+  </div>
+
+  <div id="log-card">
+    <h2>Event log</h2>
+    <div id="event-log"></div>
+  </div>
+</main>
+
+<script>
+const WS_URL = "ws://localhost:5000/live";
+let ws, chart;
+
+// ── Chart setup ──────────────────────────────────────────────────────────────
+const ctx = document.getElementById("prob-chart").getContext("2d");
+chart = new Chart(ctx, {
+  type: "line",
+  data: {
+    labels: [],
+    datasets: [{
+      label: "Home win %",
+      data: [],
+      borderColor: "#3fb950",
+      backgroundColor: "rgba(63,185,80,.12)",
+      borderWidth: 2,
+      pointRadius: 0,
+      fill: true,
+      tension: 0.4,
+    }]
+  },
+  options: {
+    animation: false,
+    scales: {
+      y: { min:0, max:1, ticks:{ callback: v => `${Math.round(v*100)}%`, color:"#8b949e" }, grid:{ color:"#21262d" } },
+      x: { ticks:{ color:"#8b949e", maxTicksLimit:8 }, grid:{ color:"#21262d" } }
+    },
+    plugins: { legend:{ display:false } }
+  }
+});
+
+// ── WebSocket ────────────────────────────────────────────────────────────────
+function connect() {
+  const gameId = document.getElementById("game-id-input").value.trim();
+  if (!gameId) return;
+
+  // Tell Flask to start polling
+  fetch(`http://localhost:5000/start/${gameId}`, { method: "POST" })
+    .catch(() => {});
+
+  if (ws) ws.close();
+  ws = new WebSocket(WS_URL);
+  ws.onopen  = () => setStatus("live");
+  ws.onclose = () => setStatus("disconnected");
+  ws.onerror = () => setStatus("error");
+  ws.onmessage = e => update(JSON.parse(e.data));
+}
+
+function setStatus(s) {
+  const el = document.getElementById("status");
+  el.textContent = s;
+  el.className = s === "live" ? "live" : "";
+}
+
+// ── UI update ────────────────────────────────────────────────────────────────
+function update(state) {
+  document.getElementById("home-name").textContent  = state.home_team;
+  document.getElementById("away-name").textContent  = state.away_team;
+  document.getElementById("home-score").textContent = state.home_score;
+  document.getElementById("away-score").textContent = state.away_score;
+  document.getElementById("game-info").textContent  = `Q${state.period} · ${state.clock}`;
+
+  const hp = state.home_win_prob, ap = state.away_win_prob;
+  document.getElementById("home-bar").style.width  = `${hp*100}%`;
+  document.getElementById("away-bar").style.width  = `${ap*100}%`;
+  document.getElementById("home-pct").textContent  = `${Math.round(hp*100)}%`;
+  document.getElementById("away-pct").textContent  = `${Math.round(ap*100)}%`;
+  document.getElementById("prob-home-label").textContent = state.home_team;
+  document.getElementById("prob-away-label").textContent = state.away_team;
+
+  // Chart
+  const label = `Q${state.period} ${state.clock}`;
+  chart.data.labels.push(label);
+  chart.data.datasets[0].data.push(hp);
+  if (chart.data.labels.length > 200) {
+    chart.data.labels.shift();
+    chart.data.datasets[0].data.shift();
+  }
+  chart.update("none");
+
+  // Log
+  addLog(`${state.clock} Q${state.period} | ${state.home_team} ${state.home_score}–${state.away_score} ${state.away_team} | home win ${Math.round(hp*100)}%`);
+}
+
+function addLog(text) {
+  const log = document.getElementById("event-log");
+  const div = document.createElement("div");
+  div.className = "log-entry";
+  div.textContent = text;
+  log.prepend(div);
+  if (log.children.length > 50) log.lastChild.remove();
+}
+</script>
+</body>
+</html>
